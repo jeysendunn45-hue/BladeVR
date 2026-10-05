@@ -11,8 +11,8 @@ small{max-width:760px;line-height:1.5;color:#bbb}
 </style></head><body>
 <div id="menu"><h1>BLADE &amp; SORCERY VR</h1><div id="maps"></div>
 <label><input type="checkbox" id="sb"> Sandbox mode (no waves, spawn enemies when you like)</label>
-<div><button id="vr">ENTER VR</button><button id="pv">Desktop preview</button></div>
-<small><b>Left stick</b> move · <b>Right stick</b> snap-turn · <b>Grip</b> grab anything (weapons, limbs, enemies) — pull a grabbed limb away to <b>tear it off</b>, grab a torso to lift/throw · <b>B / Y</b> spawn weapon (sword, axe, spear, mace) in that hand · <b>A / X</b> cycle spell for that hand (Fireball, Lightning, Force Push) · <b>Trigger</b> cast from an empty hand · Sandbox: <b>left stick click</b> spawns an enemy, <b>right stick click</b> clears · Click both sticks to exit.<br>Enemies path-find, read your movement, dodge, block, and parry. Block their blades with yours!</small></div>
+<div id="err" style="color:#f77;max-width:720px;margin:8px;font-size:15px"></div><div><button id="vr">ENTER VR</button><button id="pv">Desktop preview</button></div>
+<small><b>Left stick</b> move · <b>Right stick</b> snap-turn · <b>Grip</b> grab anything (weapons, limbs, enemies) — pull a grabbed limb away to <b>tear it off</b>, grab a torso to lift/throw · <b>B / Y</b> spawn weapon (sword, axe, spear, mace) in that hand · <b>A / X</b> cycle spell for that hand (Fireball, Lightning, Force Push) · <b>Trigger</b> cast from an empty hand · <b>Left stick click</b> opens/closes the in-VR menu (maps, sandbox, spawn/clear enemies, exit): point with a controller and pull the trigger. Sandbox: <b>right stick click</b> spawns an enemy.<br>Enemies path-find, read your movement, dodge, block, and parry. Block their blades with yours!</small></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const V=THREE.Vector3,$=id=>document.getElementById(id),N=28,OFF=14,rad=Math.PI;
@@ -206,13 +206,15 @@ for(let i=0;i<2;i++){const c=renderer.xr.getController(i);rig.add(c);c.add(new T
  c.addEventListener('connected',ev=>{h.src=ev.data;h.hand=ev.data.handedness;if(h.hand=='left')c.add(hudM)});
  c.addEventListener('disconnected',()=>{h.src=null})}
 function snap(a){const p=head.clone();rig.rotation.y+=a;rig.updateMatrixWorld(true);const q=camera.getWorldPosition(new V);rig.position.x+=p.x-q.x;rig.position.z+=p.z-q.z}
-function updHands(dt){let both=0;
+function updHands(dt){
  for(const h of HL){if(!h.src||!h.src.gamepad)continue;const gp=h.src.gamepad,b=i=>!!(gp.buttons[i]&&gp.buttons[i].pressed),ax=gp.axes.length>3?gp.axes[2]:gp.axes[0],ay=gp.axes.length>3?gp.axes[3]:gp.axes[1];
   h.c.getWorldPosition(h.pos);h.vel.lerp(h.pos.clone().sub(h.prev).divideScalar(dt),.5);h.prev.copy(h.pos);
   const grip=b(1),trig=b(0),A=b(4),B=b(5),sc=b(3),pb=h.pb;h.cd-=dt;
+  if(h.hand=='left'&&sc&&!pb.s){menuOpen?closeMenu():openMenu()}
+  if(menuOpen){menuPoint(h,trig&&!pb.t);Object.assign(pb,{g:grip,t:trig,a:A,b:B,s:sc});continue}
   if(grip&&!pb.g)tryGrab(h);if(!grip&&pb.g)release(h);
   if(A&&!pb.a)h.spell=(h.spell+1)%3;if(B&&!pb.b)spawnWeapon(h);
-  if(sc)both++;if(sc&&!pb.s){if(h.hand=='left'&&sandbox)spawnRand();if(h.hand=='right'&&sandbox){enemies.forEach(e=>scene.remove(e.g));enemies.length=0}}
+  if(sc&&!pb.s&&h.hand=='right'&&sandbox)spawnRand();
   const empty=!h.item&&!h.gb;
   if(empty&&trig&&!pb.t&&h.cd<=0){if(h.spell==0){castFire(h);h.cd=.45}else if(h.spell==2){castPush(h);h.cd=.7}}
   if(h.bolt)h.bolt.visible=false;if(empty&&trig&&h.spell==1)bolt(h,dt);
@@ -224,27 +226,55 @@ function updHands(dt){let both=0;
   // grabbed enemy part tearing
   if(h.gb&&h.gb.k!='torso'){const{e,k,d0}=h.gb,stretch=sock(e,k).distanceTo(h.pos)-d0;e.stun=Math.max(e.stun,.15);if(e.state!='stagger'){e.state='stagger';e.st=0}e.vel.addScaledVector(h.pos.clone().sub(e.c).setY(0),dt*2);
    if(stretch>.28){const it=sever(e,k);h.gb=null;if(it)hold(h,it);buzz(h,1,200);damage(e,'torso',10,null,true)}}
-  Object.assign(pb,{g:grip,t:trig,a:A,b:B,s:sc})}
- if(both>1){const s=renderer.xr.getSession();if(s)s.end()}}
+  Object.assign(pb,{g:grip,t:trig,a:A,b:B,s:sc})}}
+// ---------- VR menu (world-space panel + laser pointers)
+const msg=t=>{$('err').textContent=t};
+const mc=document.createElement('canvas');mc.width=512;mc.height=640;const mtex=new THREE.CanvasTexture(mc);
+const menuMesh=new THREE.Mesh(new THREE.PlaneGeometry(.8,1),new THREE.MeshBasicMaterial({map:mtex,transparent:true,side:THREE.DoubleSide}));menuMesh.visible=false;menuMesh.renderOrder=5;scene.add(menuMesh);
+let menuOpen=false,menuDirty=true,menuPlace=false;const MB=[];
+function menuButtons(){MB.length=0;MAPS.forEach((m,i)=>MB.push({x:30,y:80+i*58,w:452,h:50,t:(sel==i?'\u25B6 ':'')+m.n,a:()=>{sel=i;buildMap(i);resetGame();closeMenu()}}));
+ MB.push({x:30,y:380,w:452,h:50,t:'Sandbox mode: '+(sandbox?'ON':'OFF'),a:()=>{sandbox=!sandbox;resetGame()}});
+ MB.push({x:30,y:440,w:220,h:50,t:'Spawn enemy',a:()=>spawnRand()});
+ MB.push({x:262,y:440,w:220,h:50,t:'Clear enemies',a:()=>{enemies.forEach(e=>scene.remove(e.g));enemies.length=0}});
+ MB.push({x:30,y:500,w:452,h:56,t:'RESUME',c:'#7a3a10',a:()=>closeMenu()});
+ MB.push({x:30,y:566,w:452,h:46,t:'Exit VR',c:'#4a1a1a',a:()=>{const s=renderer.xr.getSession();if(s)s.end()}})}
+function drawMenu(){menuButtons();const x=mc.getContext('2d');x.clearRect(0,0,512,640);x.fillStyle='rgba(15,10,6,.93)';x.fillRect(0,0,512,640);x.strokeStyle='#e8b44a';x.lineWidth=4;x.strokeRect(2,2,508,636);x.fillStyle='#e8b44a';x.textAlign='center';x.font='bold 36px Georgia';x.fillText('BLADE & SORCERY',256,50);
+ MB.forEach((b,i)=>{const hov=HL.some(h=>h.hov===i);x.fillStyle=hov?'#ffd25a':(b.c||'#3a2a18');x.fillRect(b.x,b.y,b.w,b.h);x.strokeStyle='#8a6a2a';x.lineWidth=2;x.strokeRect(b.x,b.y,b.w,b.h);x.fillStyle=hov?'#222':'#fff';x.font='bold 26px Georgia';x.fillText(b.t,b.x+b.w/2,b.y+b.h/2+9)});
+ x.fillStyle='#998';x.font='15px Georgia';x.fillText('Left stick click: open / close menu',256,634);mtex.needsUpdate=true}
+function openMenu(){menuOpen=true;menuPlace=true;menuDirty=true}
+function closeMenu(){menuOpen=false;menuMesh.visible=false;HL.forEach(h=>{h.hov=-1;if(h.laser)h.laser.visible=false})}
+function placeMenu(){const f=new V;camera.getWorldDirection(f);f.y=0;f.normalize();menuMesh.position.set(head.x+f.x*1.3,Math.max(1.1,head.y-.1),head.z+f.z*1.3);menuMesh.lookAt(head.x,menuMesh.position.y,head.z);menuMesh.visible=true;menuMesh.updateMatrixWorld(true);menuPlace=false}
+const rc=new THREE.Raycaster();
+function menuPoint(h,click){rc.set(h.pos,dirOf(h));const hit=rc.intersectObject(menuMesh)[0];let idx=-1;
+ if(!h.laser){h.laser=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new V(0,0,0),new V(0,0,-1)]),new THREE.LineBasicMaterial({color:0xffd25a}));h.c.add(h.laser)}
+ h.laser.visible=true;h.laser.scale.z=hit?hit.distance:2;
+ if(hit&&hit.uv){const px=hit.uv.x*512,py=(1-hit.uv.y)*640;idx=MB.findIndex(b=>px>=b.x&&px<=b.x+b.w&&py>=b.y&&py<=b.y+b.h)}
+ if(idx!==h.hov){h.hov=idx;menuDirty=true;if(idx>=0)buzz(h,.2,15)}
+ if(click&&idx>=0){buzz(h,.6,60);snd(500,.08,'triangle',.1,200);const b=MB[idx];b.a();menuDirty=true}}
 // ---------- game flow
 function resetGame(){enemies.forEach(e=>scene.remove(e.g));enemies.length=0;items.forEach(i=>i.mesh.parent&&i.mesh.parent.remove(i.mesh));items.length=0;projs.forEach(p=>scene.remove(p.m));projs.length=0;HL.forEach(h=>{h.item=null;h.gb=null});
  wave=0;kills=0;waveT=2;pHP=100;pDead=false;rig.position.set(0,0,6);rig.rotation.y=0;rig.updateMatrixWorld(true);camera.getWorldPosition(head);phead.copy(head);headVel.set(0,0,0);banner(MAPS[sel].n+(sandbox?' — Sandbox':''));if(sandbox){spawnRand();spawnRand()}}
 function update(dt){
  scene.updateMatrixWorld(true);camera.getWorldPosition(head);headVel.lerp(head.clone().sub(phead).divideScalar(dt),.1);if(headVel.length()>4)headVel.setLength(4);phead.copy(head);
- if(inVR)updHands(dt);updItems(dt);enemies.forEach(e=>updEnemy(e,dt));updProj(dt);updP(dt);
+ if(menuOpen&&menuPlace)placeMenu();if(inVR)updHands(dt);
+ if(menuOpen){if(menuDirty){drawMenu();menuDirty=false}return}
+ updItems(dt);enemies.forEach(e=>updEnemy(e,dt));updProj(dt);updP(dt);
  if(!sandbox&&!pDead){if(!enemies.some(e=>!e.dead)){waveT-=dt;if(waveT<=0){wave++;waveT=3;for(let i=0;i<Math.min(1+wave,7);i++)spawnRand();banner('WAVE '+wave)}}}
  const dead=enemies.filter(e=>e.dead);if(dead.length>6){const e=dead[0];scene.remove(e.g);enemies.splice(enemies.indexOf(e),1)}
  pLast+=dt;if(!pDead&&pLast>5)pHP=Math.min(100,pHP+dt*2);if(pDead){deadT-=dt;if(deadT<=0)resetGame()}
  flash=Math.max(0,flash-dt*1.5);fm.material.opacity=flash*.5+(pDead?.5:0);if(bannerT>0){bannerT-=dt;if(bannerT<=0)bm.visible=false}
  hudT-=dt;if(hudT<=0){hudT=.2;drawHUD()}}
 function setPreview(){rig.position.set(0,0,6);rig.rotation.set(0,0,0);camera.position.set(0,1.6,0);camera.rotation.set(0,0,0);camera.lookAt(0,1.2,0)}
-function start(vr){AC=AC||new (window.AudioContext||window.webkitAudioContext)();sandbox=$('sb').checked;buildMap(sel);started=true;inVR=false;setPreview();resetGame();
- if(vr)navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']}).then(s=>renderer.xr.setSession(s)).catch(e=>alert('Could not start VR: '+e.message));
- else $('menu').style.display='none'}
-renderer.xr.addEventListener('sessionstart',()=>{inVR=true;$('menu').style.display='none'});
-renderer.xr.addEventListener('sessionend',()=>{inVR=false;started=false;$('menu').style.display='flex';setPreview()});
+function start(vr){msg('');AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+ const setup=()=>{sandbox=$('sb').checked;buildMap(sel);started=true;inVR=false;setPreview();resetGame()};
+ if(!vr){setup();$('menu').style.display='none';return}
+ if(!navigator.xr){msg(why||'WebXR is not available in this browser.');return}
+ navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']}).catch(()=>{renderer.xr.setReferenceSpaceType('local');return navigator.xr.requestSession('immersive-vr')}).then(sess=>{setup();return renderer.xr.setSession(sess)}).catch(e=>{started=false;msg('Could not start VR: '+((e&&e.message)||e)+(why?' - '+why:''))})}
+renderer.xr.addEventListener('sessionstart',()=>{inVR=true;$('menu').style.display='none';openMenu()});
+renderer.xr.addEventListener('sessionend',()=>{inVR=false;started=false;closeMenu();$('menu').style.display='flex';setPreview()});
+const why=!isSecureContext?"WebXR needs HTTPS (or localhost). Opening the file directly won't work: host it (e.g. GitHub Pages) and open that link in your headset's browser.":!navigator.xr?'This browser has no WebXR support. Use the Quest Browser or a WebXR-capable desktop browser with a headset.':window.top!==window?'This page is inside a preview frame, which blocks VR. Open the file directly in your headset browser.':'';
 $('vr').onclick=()=>start(true);$('pv').onclick=()=>start(false);
-if(!navigator.xr){$('vr').disabled=true;$('vr').textContent='WebXR not available here'}else navigator.xr.isSessionSupported('immersive-vr').then(ok=>{if(!ok){$('vr').disabled=true;$('vr').textContent='VR not supported on this device'}});
+if(why)msg(why);else navigator.xr.isSessionSupported('immersive-vr').then(ok=>{if(!ok)msg('No VR headset detected. You can still try ENTER VR, or use Desktop preview.')}).catch(()=>{});
 buildMap(0);setPreview();const clock=new THREE.Clock();
 renderer.setAnimationLoop(()=>{const dt=Math.min(.05,clock.getDelta()||.016);if(started)update(dt);renderer.render(scene,camera)});
 </script></body></html>
